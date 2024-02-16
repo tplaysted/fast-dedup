@@ -1,6 +1,6 @@
 // cli imports
 use clap::Parser;
-use indicatif::HumanBytes;
+use indicatif::{HumanBytes, ProgressBar};
 
 // file system imports
 use std::fs::{self, DirEntry};
@@ -22,11 +22,16 @@ struct Args {
 
 // Check if a given path points to an image file
 fn is_image(path: &Path) -> bool {
-    match path.extension().unwrap().to_str() {
-        Some("jpg") => true,
-        Some("jpeg") => true,
-        Some("png") => true,
-        _ => false
+    let ext = path.extension();
+    if !ext.is_none() {
+        match ext.unwrap().to_str() {
+            Some("jpg") => true,
+            Some("jpeg") => true,
+            Some("png") => true,
+            _ => false
+        }
+    } else {
+        return false
     }
 }
 
@@ -57,13 +62,19 @@ fn get_images_in_dir(dir: &Path) -> io::Result<Vec<DirEntry>> {
 
 fn generate_hashes(images: &Vec<DirEntry>) -> io::Result<Vec<Dhash>> {
     let mut hashes: Vec<Dhash> = vec![];
+    let total: usize = images.len();
+    let bar = ProgressBar::new(total.try_into().unwrap());
 
     for im in images {
         let im_file = image::open(im.path());
         if let Ok(im_file) = im_file {
             hashes.push(Dhash::new(&im_file));
         } 
+
+        bar.inc(1);
     }
+
+    bar.finish();
 
     return Ok(hashes);
 }
@@ -89,9 +100,7 @@ fn main() {
     println!("Found {} of image files", HumanBytes(get_total_size_of_files(&images).unwrap()));
 
     // Generate hashes
+    println!("Hashing images...");
+    
     let hashes = generate_hashes(&images).unwrap();
-
-    for hash in hashes {
-        println!("{}", hash);
-    }
 }
