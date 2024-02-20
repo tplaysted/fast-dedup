@@ -10,9 +10,11 @@ use std::path::Path;
 // hashing imports
 use fast_dhash::Dhash;
 use image;
+use std::collections::HashMap;
+use std::hash::Hash;
 
 // multithreading imports
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 
 // misc imports
@@ -68,29 +70,24 @@ fn get_images_in_dir(dir: &Path) -> io::Result<Vec<DirEntry>> {
     return Ok(image_paths);
 }
 
-fn get_splits<T>(big_vec: &Vec<T>, count: usize) -> Vec<Vec<&T>> {
-    let mut splits = vec![];
-    for _ in 0..count {
-        splits.push(vec![]);
-    }
+// fn get_splits<T>(big_vec: &[T], count: usize) -> Vec<&[T]> {
+//     let mut splits = vec![];
+//     let r = big_vec.len() % count;
+//     let d = big_vec.len() / count;  // len = d * count + r
 
-    let mut i = 0;
+//     for i in 0..r {
+//         splits.push(&big_vec[i * d .. (i + 1) * d + 1]);
+//     }
 
-    for el in big_vec {
-        splits[i].push(el);
-        if i == count {
-            i = 0;
-        } else {
-            i += 1;
-        }
-    }
+//     for i in r..count {
+//         splits.push(&big_vec[i * d .. (i + 1) * d]);
+//     } 
 
-    return splits;
-}
+//     return splits;
+// }
 
-fn generate_hashes(images: &Vec<DirEntry>, bar: &ProgressBar) -> io::Result<Vec<Dhash>> {
+fn generate_hashes(images: &[DirEntry], bar: &ProgressBar) -> io::Result<Vec<Dhash>> {
     let mut hashes: Vec<Dhash> = vec![];
-    let total: usize = images.len();
 
     for im in images {
         let im_file = image::open(im.path());
@@ -106,7 +103,7 @@ fn generate_hashes(images: &Vec<DirEntry>, bar: &ProgressBar) -> io::Result<Vec<
     return Ok(hashes);
 }
 
-fn get_total_size_of_files(images: &Vec<DirEntry>) -> io::Result<u64> {
+fn get_total_size_of_files(images: &[DirEntry]) -> io::Result<u64> {
     let mut total: u64 = 0;
 
     for im in images {
@@ -116,108 +113,70 @@ fn get_total_size_of_files(images: &Vec<DirEntry>) -> io::Result<u64> {
     return Ok(total);
 }
 
-fn not_main() {
+fn find_duplicates<'a, K: Eq + Hash + Copy + 'a, V>(keys: &[K], values: &'a [V]) -> (Vec<&'a V>, Vec<&'a V>) {
+    let mut originals = vec![];
+    let mut duplicates = vec![];
+    let mut map: HashMap<K, usize> = HashMap::new();
+
+    for i in 0..std::cmp::min(keys.len(), values.len()) {
+        match map.get(&keys[i]) {
+            Some(_) => duplicates.push(&values[i]),
+            _ => {
+                originals.push(&values[i]);
+                map.insert(keys[i], i);
+            },
+        }
+    }
+
+    return (originals, duplicates);
+}
+
+fn main() {
     // Get an image and compute its hash
     // let args = Args::parse();
 
     // Explore the filetree for images
     let root = Path::new(".");
-    let images: Vec<DirEntry> = get_images_in_dir(root).unwrap();
+    let images = get_images_in_dir(root).unwrap();
 
     println!("Found {} of image files", HumanBytes(get_total_size_of_files(&images).unwrap()));
 
-    // Generate hashes
-    println!("Hashing images...");
-
-
-    // MultiProgress bar definitions
-    let m = MultiProgress::new();
+    // Progress bar definitions
     let sty = ProgressStyle::with_template(
         "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
     )
     .unwrap()
     .progress_chars("=>-");
+    let bar = ProgressBar::new(images.len() as u64);
+    bar.set_style(sty);
 
-    // Generate threads
-    let thread_count = 4;
-    let splits = get_splits(&images, thread_count);
-
-    let mut bars = vec![];
-    let mut threads = vec![];
-
-    for _ in 0..thread_count {
-        let pb = m.add(ProgressBar::new(images.len().try_into().unwrap()));
-        pb.set_style(sty.clone());
-        pb.set_message("Hashing...");
-        bars.push(pb);
-        let t = thread::spawn(move || {
-
-        });
-        threads.push(t);
-    }
-
-
+    // Generate hashes
+    println!("Hashing images...");
     
-    // let hashes = generate_hashes(&images, &bar).unwrap();
+    let hashes = generate_hashes(&images, &bar).unwrap();
+    let mut keys = vec![];
+    let mut paths = vec![];
+
+    for hash in hashes {
+        keys.push(hash.to_u64());
+    }
+
+    for im in images {
+        let p = im.path();
+        let s = p.to_str().unwrap().to_string();
+        paths.push(s);
+    }
+
+    // find duplicate images
+    println!("Finding dupicates...");
+    let (orig, dups) = find_duplicates(&keys, &paths);
+    println!("Originals: \n");
+    for ln in orig {
+        println!("{}", ln);
+    }
+    println!("Duplicates: \n");
+    for ln in dups {
+        println!("{}", ln);
+    }
 }
 
-fn main() {
-    let m = MultiProgress::new();
-    let sty = ProgressStyle::with_template(
-        "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-    )
-    .unwrap()
-    .progress_chars("##-");
-
-    let n = 200;
-    let pb = m.add(ProgressBar::new(n));
-    pb.set_style(sty.clone());
-    pb.set_message("todo");
-    let pb2 = m.add(ProgressBar::new(n));
-    pb2.set_style(sty.clone());
-    pb2.set_message("finished");
-
-    let pb3 = m.insert_after(&pb2, ProgressBar::new(1024));
-    pb3.set_style(sty);
-
-    m.println("starting!").unwrap();
-
-    let mut threads = vec![];
-
-    let m_clone = m.clone();
-    let h3 = thread::spawn(move || {
-        for i in 0..1024 {
-            thread::sleep(Duration::from_millis(2));
-            pb3.set_message(format!("item #{}", i + 1));
-            pb3.inc(1);
-        }
-        m_clone.println("pb3 is done!").unwrap();
-        pb3.finish_with_message("done");
-    });
-
-    for i in 0..n {
-        thread::sleep(Duration::from_millis(15));
-        if i == n / 3 {
-            thread::sleep(Duration::from_secs(2));
-        }
-        pb.inc(1);
-        let m = m.clone();
-        let pb2 = pb2.clone();
-        threads.push(thread::spawn(move || {
-            let spinner = m.add(ProgressBar::new_spinner().with_message(i.to_string()));
-            spinner.enable_steady_tick(Duration::from_millis(100));
-            thread::sleep(
-                rand::thread_rng().gen_range(Duration::from_secs(1)..Duration::from_secs(5)),
-            );
-            pb2.inc(1);
-        }));
-    }
-    pb.finish_with_message("all jobs started");
-
-    for thread in threads {
-        let _ = thread.join();
-    }
-    let _ = h3.join();
-    pb2.finish_with_message("all jobs done");
-    m.clear().unwrap();
-}
