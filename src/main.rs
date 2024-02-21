@@ -1,5 +1,5 @@
 // cli imports
-use clap::Parser;
+use clap::{Arg, Args, command, Command, Parser};
 use indicatif::{HumanBytes, ProgressBar, ProgressStyle, MultiProgress};
 
 // file system imports
@@ -23,13 +23,13 @@ use std::time::Duration;
 use rand::Rng;
 
 // Simple command argument struct
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    // Copy files to target directory?
-    #[arg(short, long, action)]
-    keep: String,
-}
+// #[derive(Parser, Debug)]
+// #[command(version, about, long_about = None)]
+// struct Args {
+//     // Copy files to target directory?
+//     #[arg(short, long, action, default_value="target")]
+//     keep: String,
+// }
 
 // Implement partial ordering for image paths
 trait IsBetterQual {
@@ -101,21 +101,21 @@ fn get_images_in_dir(dir: &Path) -> io::Result<Vec<DirEntry>> {
     return Ok(image_paths);
 }
 
-// fn get_splits<T>(big_vec: &[T], count: usize) -> Vec<&[T]> {
-//     let mut splits = vec![];
-//     let r = big_vec.len() % count;
-//     let d = big_vec.len() / count;  // len = d * count + r
+fn get_splits<T>(big_vec: &[T], count: usize) -> Vec<&[T]> {
+    let mut splits = vec![];
+    let r = big_vec.len() % count;
+    let d = big_vec.len() / count;  // len = d * count + r
 
-//     for i in 0..r {
-//         splits.push(&big_vec[i * d .. (i + 1) * d + 1]);
-//     }
+    for i in 0..r {
+        splits.push(&big_vec[i * d .. (i + 1) * d + 1]);
+    }
 
-//     for i in r..count {
-//         splits.push(&big_vec[i * d .. (i + 1) * d]);
-//     } 
+    for i in r..count {
+        splits.push(&big_vec[i * d .. (i + 1) * d]);
+    } 
 
-//     return splits;
-// }
+    return splits;
+}
 
 fn generate_hashes(images: &[DirEntry], bar: &ProgressBar) -> io::Result<Vec<Dhash>> {
     let mut hashes: Vec<Dhash> = vec![];
@@ -173,9 +173,35 @@ fn find_duplicates<'a, K: Eq + Hash + Copy + 'a, V: IsBetterQual>(keys: &[K], va
     return (originals, duplicates);
 }
 
+fn delete_files(paths: &[&DirEntry]) -> io::Result<()> {
+    for item in paths {
+        if item.path().is_dir() {return Err(std::io::Error::new(std::io::ErrorKind::Other, "Can't delete folder"));}
+        if let Err(why) = fs::remove_file(item.path()) {
+            return Err(why);
+        }
+    }
+
+    return Ok(());
+}
+
+fn copy_files_to_dir(paths: &[&DirEntry], dir: &Path) -> io::Result<()> {
+    if !dir.is_dir() {return Err(std::io::Error::new(std::io::ErrorKind::Other, "'dir' must be a directory"));}
+
+    for item in paths {
+        if item.path().is_dir() {return Err(std::io::Error::new(std::io::ErrorKind::Other, "Can't copy folder"));}
+        let new_path = dir.join(Path::new(item.path().file_name().unwrap()));
+        let _ = fs::File::create(&new_path).unwrap();
+        if let Err(why) = fs::copy(item.path(), new_path) {
+            return Err(why);
+        }
+    }
+
+    return Ok(());
+}
+
 fn main() {
-    // Get an image and compute its hash
-    // let args = Args::parse();
+    // get cli arguments
+    let m = cli().get_matches();
 
     // Explore the filetree for images
     let root = Path::new(".");
@@ -206,15 +232,53 @@ fn main() {
     }
 
     // find duplicate images
-    println!("Finding dupicates...");
+    let spin = ProgressBar::new_spinner();
+    spin.set_message("Finding dupicates...");
+    spin.enable_steady_tick(Duration::from_millis(50));
+
     let (orig, dups) = find_duplicates(&keys, &images);
-    println!("Originals: \n");
-    for ln in orig {
-        println!("{:?}", ln);
+
+    spin.finish_with_message(format!("Found {} original images and {} duplicates.", orig.len(), dups.len()));
+
+    // Do copying or deleting
+    let spin = ProgressBar::new_spinner();
+
+    if let Some(path) = m.get_one::<String>("Keep") {  // user wants to keep images
+        spin.set_message(format!("Copying original images into '{}'", path));
+        spin.enable_steady_tick(Duration::from_millis(50));
+
+        if let Err(why) = fs::create_dir(path) {
+            spin.finish_with_message(format!("Could not create directory {}: {}", path, why))
+        }
+
+        match copy_files_to_dir(&orig, Path::new(path)) {
+            Ok(_) => spin.finish_with_message(format!("Copied original images into '{}'", path)),
+            Err(why) => spin.finish_with_message(format!("Failed to copy images: {}", why))
+        }
+    } else {
+        spin.set_message("Deleting duplicate images...");
+        spin.enable_steady_tick(Duration::from_millis(50));
+
+        match delete_files(&dups) {
+            Ok(_) => spin.finish_with_message("Deleted duplicate images"),
+            Err(why) => spin.finish_with_message(format!("Failed to delete duplicate images: {}", why))
+        }
     }
-    println!("Duplicates: \n");
-    for ln in dups {
-        println!("{:?}", ln);
-    }
+}
+
+fn cli() -> Command {
+    Command::new("FastDedup")
+        .arg(
+            Arg::new("Keep")
+            .short('k')
+            .long("keep")
+            .default_missing_value("target")
+            .num_args(0..=1)
+            .require_equals(true)
+            .help("Keep files and copy originals into new directory (default '/target')")
+        )
+        .about(
+            "A fast utility for removing duplicate image files with pereptual hashing."
+        )
 }
 
