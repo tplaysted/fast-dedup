@@ -273,8 +273,7 @@ fn cli() -> Command {
             .short('k')
             .long("keep")
             .default_missing_value("target")
-            .num_args(0..=1)
-            .require_equals(true)
+            .num_args(1)
             .help("Keep files and copy originals into new directory (default '/target')")
         )
         .about(
