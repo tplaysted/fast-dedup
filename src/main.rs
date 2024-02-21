@@ -69,6 +69,9 @@ fn is_image(path: &Path) -> bool {
             Some("jpg") => true,
             Some("jpeg") => true,
             Some("png") => true,
+            Some("JPG") => true,
+            Some("JPEG") => true,
+            Some("PNG") => true,
             _ => false
         }
     } else {
