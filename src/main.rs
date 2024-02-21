@@ -12,6 +12,7 @@ use fast_dhash::Dhash;
 use image;
 use std::collections::HashMap;
 use std::hash::Hash;
+use imagesize;
 
 // multithreading imports
 use std::sync::{Arc, mpsc};
@@ -21,13 +22,43 @@ use std::thread;
 use std::time::Duration;
 use rand::Rng;
 
-/// Simple program to greet a person
+// Simple command argument struct
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Copy files to target directory?
+    // Copy files to target directory?
     #[arg(short, long, action)]
-    target: bool,
+    keep: String,
+}
+
+// Implement partial ordering for image paths
+trait IsBetterQual {
+    fn partial_cmp(&self, other: &Self) -> Option<bool>;
+}
+impl IsBetterQual for DirEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<bool> {
+        if !is_image(&self.path()) {return None};
+        if !is_image(&other.path()) {return None};
+
+        let self_size: usize;
+        let other_size: usize;
+
+        match imagesize::size(self.path()) {
+            Ok(dim) => {
+                self_size = dim.width * dim.height;
+            }
+            Err(why) => {println!("Error getting size: {:?}", why); return None;}
+        }
+
+        match imagesize::size(other.path()) {
+            Ok(dim) => {
+                other_size = dim.width * dim.height;
+            }
+            Err(why) => {println!("Error getting size: {:?}", why); return None;}
+        }
+
+        return Some(self_size > other_size);
+    }
 }
 
 // Check if a given path points to an image file
@@ -113,19 +144,30 @@ fn get_total_size_of_files(images: &[DirEntry]) -> io::Result<u64> {
     return Ok(total);
 }
 
-fn find_duplicates<'a, K: Eq + Hash + Copy + 'a, V>(keys: &[K], values: &'a [V]) -> (Vec<&'a V>, Vec<&'a V>) {
+fn find_duplicates<'a, K: Eq + Hash + Copy + 'a, V: IsBetterQual>(keys: &[K], values: &'a [V]) -> (Vec<&'a V>, Vec<&'a V>) {
     let mut originals = vec![];
     let mut duplicates = vec![];
-    let mut map: HashMap<K, usize> = HashMap::new();
+    let mut orig_map: HashMap<K, usize> = HashMap::new();
 
     for i in 0..std::cmp::min(keys.len(), values.len()) {
-        match map.get(&keys[i]) {
-            Some(_) => duplicates.push(&values[i]),
+        match orig_map.get(&keys[i]) {
+            Some(&val_index) => {  // a value already exists at that key
+                if values[val_index].partial_cmp(&values[i]).unwrap() { // the new value is better
+                    duplicates.push(&values[i]);
+                    orig_map.insert(keys[i], val_index);
+                } else { // the old value is better
+                    duplicates.push(&values[val_index]);
+                    orig_map.insert(keys[i], i);
+                }
+            },
             _ => {
-                originals.push(&values[i]);
-                map.insert(keys[i], i);
+                orig_map.insert(keys[i], i);
             },
         }
+    }
+
+    for o in orig_map {  // convert hashmap to vector
+        originals.push(&values[o.1]);
     }
 
     return (originals, duplicates);
@@ -137,10 +179,13 @@ fn main() {
 
     // Explore the filetree for images
     let root = Path::new(".");
+    let spin = ProgressBar::new_spinner();
+    spin.set_message("Looking for image files...");
+    spin.enable_steady_tick(Duration::from_millis(50));
+
     let images = get_images_in_dir(root).unwrap();
-
-    println!("Found {} of image files", HumanBytes(get_total_size_of_files(&images).unwrap()));
-
+    spin.finish_with_message(format!("Found {} of image files", HumanBytes(get_total_size_of_files(&images).unwrap())));
+    
     // Progress bar definitions
     let sty = ProgressStyle::with_template(
         "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
@@ -155,28 +200,21 @@ fn main() {
     
     let hashes = generate_hashes(&images, &bar).unwrap();
     let mut keys = vec![];
-    let mut paths = vec![];
 
     for hash in hashes {
         keys.push(hash.to_u64());
     }
 
-    for im in images {
-        let p = im.path();
-        let s = p.to_str().unwrap().to_string();
-        paths.push(s);
-    }
-
     // find duplicate images
     println!("Finding dupicates...");
-    let (orig, dups) = find_duplicates(&keys, &paths);
+    let (orig, dups) = find_duplicates(&keys, &images);
     println!("Originals: \n");
     for ln in orig {
-        println!("{}", ln);
+        println!("{:?}", ln);
     }
     println!("Duplicates: \n");
     for ln in dups {
-        println!("{}", ln);
+        println!("{:?}", ln);
     }
 }
 
