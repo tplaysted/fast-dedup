@@ -1,5 +1,5 @@
 // cli imports
-use clap::{Arg, Args, command, Command, Parser};
+use clap::{Arg, Command};
 use indicatif::{HumanBytes, ProgressBar, ProgressStyle, MultiProgress};
 
 // file system imports
@@ -15,12 +15,11 @@ use std::hash::Hash;
 use imagesize;
 
 // multithreading imports
-use std::sync::{Arc, mpsc};
+use std::sync::mpsc;
 use std::thread;
 
 // misc imports
 use std::time::Duration;
-use rand::Rng;
 
 // Simple command argument struct
 // #[derive(Parser, Debug)]
@@ -35,22 +34,22 @@ use rand::Rng;
 trait IsBetterQual {
     fn partial_cmp(&self, other: &Self) -> Option<bool>;
 }
-impl IsBetterQual for DirEntry {
+impl IsBetterQual for Path {
     fn partial_cmp(&self, other: &Self) -> Option<bool> {
-        if !is_image(&self.path()) {return None};
-        if !is_image(&other.path()) {return None};
+        if !is_image(&self) {return None};
+        if !is_image(&other) {return None};
 
         let self_size: usize;
         let other_size: usize;
 
-        match imagesize::size(self.path()) {
+        match imagesize::size(self) {
             Ok(dim) => {
                 self_size = dim.width * dim.height;
             }
             Err(why) => {println!("Error getting size: {:?}", why); return None;}
         }
 
-        match imagesize::size(other.path()) {
+        match imagesize::size(other) {
             Ok(dim) => {
                 other_size = dim.width * dim.height;
             }
@@ -58,6 +57,12 @@ impl IsBetterQual for DirEntry {
         }
 
         return Some(self_size > other_size);
+    }
+}
+
+impl IsBetterQual for String {
+    fn partial_cmp(&self, other: &Self) -> Option<bool> {
+        return IsBetterQual::partial_cmp(self, other);
     }
 }
 
@@ -104,35 +109,71 @@ fn get_images_in_dir(dir: &Path) -> io::Result<Vec<DirEntry>> {
     return Ok(image_paths);
 }
 
-fn get_splits<T>(big_vec: &[T], count: usize) -> Vec<&[T]> {
+fn get_splits<T: Sized + Clone>(big_vec: Vec<T>, count: usize) -> Vec<Vec<T>> {
     let mut splits = vec![];
     let r = big_vec.len() % count;
     let d = big_vec.len() / count;  // len = d * count + r
 
     for i in 0..r {
-        splits.push(&big_vec[i * d .. (i + 1) * d + 1]);
+        let mut split = vec![];
+        for j in i * d .. (i + 1) * d + 1 {
+            split.push(big_vec[j].clone());
+        }
+        splits.push(split);
     }
 
     for i in r..count {
-        splits.push(&big_vec[i * d .. (i + 1) * d]);
+        let mut split = vec![];
+        for j in i * d .. (i + 1) * d {
+            split.push(big_vec[j].clone());
+        }
+        splits.push(split);
     } 
 
     return splits;
 }
 
-fn generate_hashes(images: &[DirEntry], bar: &ProgressBar) -> io::Result<Vec<Dhash>> {
-    let mut hashes: Vec<Dhash> = vec![];
+fn generate_hashes(images: Vec<String>, bar: ProgressBar) -> io::Result<Vec<(String, Dhash)>> {
+    let mut hashes: Vec<(String, Dhash)> = vec![];
 
     for im in images {
-        let im_file = image::open(im.path());
+        let im_file = image::open(Path::new(&im));
         if let Ok(im_file) = im_file {
-            hashes.push(Dhash::new(&im_file));
+            hashes.push((im, Dhash::new(&im_file)));
         } 
 
         bar.inc(1);
     }
 
     bar.finish();
+
+    return Ok(hashes);
+}
+
+fn generate_hashes_multithreaded(paths: Vec<String>, bar: ProgressBar, thread_count: i32) -> io::Result<Vec<(String, Dhash)>> {
+    let mut hashes: Vec<(String, Dhash)> = vec![];
+
+    let splits = get_splits(paths, thread_count.try_into().unwrap());
+    let mut threads = vec![];
+
+    let (tx, rx) = mpsc::channel();
+
+    let m = MultiProgress::new();
+
+    for split in splits {
+        let new_bar = m.add(bar.clone());
+        let tx1 = tx.clone();
+        threads.push(thread::spawn(move || {
+            let sub_hashes = generate_hashes(split, new_bar).unwrap();
+            for hash in sub_hashes {
+                tx1.send(hash).unwrap();
+            }
+        }));
+    }
+
+    for received in rx {
+        hashes.push(received);
+    }
 
     return Ok(hashes);
 }
@@ -147,7 +188,13 @@ fn get_total_size_of_files(images: &[DirEntry]) -> io::Result<u64> {
     return Ok(total);
 }
 
-fn find_duplicates<'a, K: Eq + Hash + Copy + 'a, V: IsBetterQual>(keys: &[K], values: &'a [V]) -> (Vec<&'a V>, Vec<&'a V>) {
+fn find_duplicates<'a, K: Eq + Hash + Clone + 'a, V: IsBetterQual>(kvpairs: Vec<(K, V)>) -> (Vec<&'a V>, Vec<&'a V>) {
+    let mut keys = vec![];
+    let mut values = vec![];
+    for pair in kvpairs {
+        keys.push(pair.0);
+        values.push(pair.1);
+    }
     let mut originals = vec![];
     let mut duplicates = vec![];
     let mut orig_map: HashMap<K, usize> = HashMap::new();
@@ -227,11 +274,15 @@ fn main() {
     // Generate hashes
     println!("Hashing images...");
     
-    let hashes = generate_hashes(&images, &bar).unwrap();
+    let mut paths = vec![];
+    for im in &images {
+        paths.push(String::from(im.path().to_str().unwrap()));
+    }
+    let hashes = generate_hashes_multithreaded(paths, bar, 4).unwrap();
     let mut keys = vec![];
 
     for hash in hashes {
-        keys.push(hash.to_u64());
+        keys.push((hash.1.to_u64(), hash.0));
     }
 
     // find duplicate images
@@ -239,7 +290,7 @@ fn main() {
     spin.set_message("Finding dupicates...");
     spin.enable_steady_tick(Duration::from_millis(50));
 
-    let (orig, dups) = find_duplicates(&keys, &images);
+    let (orig, dups) = find_duplicates(keys);
 
     spin.finish_with_message(format!("Found {} original images and {} duplicates.", orig.len(), dups.len()));
 
@@ -276,11 +327,11 @@ fn cli() -> Command {
             .short('k')
             .long("keep")
             .default_missing_value("target")
-            .num_args(1)
+            .num_args(0..=1)
             .help("Keep files and copy originals into new directory (default '/target')")
         )
         .about(
-            "A fast utility for removing duplicate image files with pereptual hashing."
+            "A fast utility for removing duplicate image files with perceptual hashing."
         )
 }
 
