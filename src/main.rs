@@ -108,7 +108,7 @@ fn get_splits<T: Sized + Clone>(big_vec: Vec<T>, count: usize) -> Vec<Vec<T>> {
 
     for i in 0..r {
         let mut split = vec![];
-        for j in i * d .. (i + 1) * d + 1 {
+        for j in i * (d + 1) .. (i + 1) * (d + 1) {
             split.push(big_vec[j].clone());
         }
         splits.push(split);
@@ -116,7 +116,7 @@ fn get_splits<T: Sized + Clone>(big_vec: Vec<T>, count: usize) -> Vec<Vec<T>> {
 
     for i in r..count {
         let mut split = vec![];
-        for j in i * d .. (i + 1) * d {
+        for j in r + i * d .. r + (i + 1) * d {
             split.push(big_vec[j].clone());
         }
         splits.push(split);
@@ -349,4 +349,5 @@ fn cli() -> Command {
             "A fast utility for removing duplicate image files with perceptual hashing."
         )
 }
+
 
