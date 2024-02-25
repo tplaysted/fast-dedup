@@ -62,7 +62,7 @@ impl IsBetterQual for Path {
 
 impl IsBetterQual for String {
     fn partial_cmp(&self, other: &Self) -> Option<bool> {
-        return IsBetterQual::partial_cmp(self, other);
+        return IsBetterQual::partial_cmp(Path::new(self), Path::new(other));
     }
 }
 
@@ -188,7 +188,7 @@ fn get_total_size_of_files(images: &[DirEntry]) -> io::Result<u64> {
     return Ok(total);
 }
 
-fn find_duplicates<'a, K: Eq + Hash + Clone + 'a, V: IsBetterQual>(kvpairs: Vec<(K, V)>) -> (Vec<&'a V>, Vec<&'a V>) {
+fn find_duplicates<'a, K: Eq + Hash + Clone + 'a, V: IsBetterQual + Clone>(kvpairs: Vec<(K, V)>) -> (Vec<V>, Vec<V>) {
     let mut keys = vec![];
     let mut values = vec![];
     for pair in kvpairs {
@@ -203,30 +203,31 @@ fn find_duplicates<'a, K: Eq + Hash + Clone + 'a, V: IsBetterQual>(kvpairs: Vec<
         match orig_map.get(&keys[i]) {
             Some(&val_index) => {  // a value already exists at that key
                 if values[val_index].partial_cmp(&values[i]).unwrap() { // the new value is better
-                    duplicates.push(&values[i]);
-                    orig_map.insert(keys[i], val_index);
+                    duplicates.push(values[i].clone());
+                    orig_map.insert(keys[i].clone(), val_index);
                 } else { // the old value is better
-                    duplicates.push(&values[val_index]);
-                    orig_map.insert(keys[i], i);
+                    duplicates.push(values[val_index].clone());
+                    orig_map.insert(keys[i].clone(), i);
                 }
             },
             _ => {
-                orig_map.insert(keys[i], i);
+                orig_map.insert(keys[i].clone(), i);
             },
         }
     }
 
     for o in orig_map {  // convert hashmap to vector
-        originals.push(&values[o.1]);
+        originals.push(values[o.1].clone());
     }
 
     return (originals, duplicates);
 }
 
-fn delete_files(paths: &[&DirEntry]) -> io::Result<()> {
+fn delete_files(paths: Vec<String>) -> io::Result<()> {
     for item in paths {
-        if item.path().is_dir() {return Err(std::io::Error::new(std::io::ErrorKind::Other, "Can't delete folder"));}
-        if let Err(why) = fs::remove_file(item.path()) {
+        let path = Path::new(&item);
+        if path.is_dir() {return Err(std::io::Error::new(std::io::ErrorKind::Other, "Can't delete folder"));}
+        if let Err(why) = fs::remove_file(path) {
             return Err(why);
         }
     }
@@ -234,14 +235,15 @@ fn delete_files(paths: &[&DirEntry]) -> io::Result<()> {
     return Ok(());
 }
 
-fn copy_files_to_dir(paths: &[&DirEntry], dir: &Path) -> io::Result<()> {
+fn copy_files_to_dir(paths: Vec<String>, dir: &Path) -> io::Result<()> {
     if !dir.is_dir() {return Err(std::io::Error::new(std::io::ErrorKind::Other, "'dir' must be a directory"));}
 
     for item in paths {
-        if item.path().is_dir() {return Err(std::io::Error::new(std::io::ErrorKind::Other, "Can't copy folder"));}
-        let new_path = dir.join(Path::new(item.path().file_name().unwrap()));
+        let path = Path::new(&item);
+        if path.is_dir() {return Err(std::io::Error::new(std::io::ErrorKind::Other, "Can't copy folder"));}
+        let new_path = dir.join(Path::new(path.file_name().unwrap()));
         let _ = fs::File::create(&new_path).unwrap();
-        if let Err(why) = fs::copy(item.path(), new_path) {
+        if let Err(why) = fs::copy(path, new_path) {
             return Err(why);
         }
     }
@@ -305,7 +307,7 @@ fn main() {
             spin.finish_with_message(format!("Could not create directory {}: {}", path, why))
         }
 
-        match copy_files_to_dir(&orig, Path::new(path)) {
+        match copy_files_to_dir(orig, Path::new(path)) {
             Ok(_) => spin.finish_with_message(format!("Copied original images into '{}'", path)),
             Err(why) => spin.finish_with_message(format!("Failed to copy images: {}", why))
         }
@@ -313,7 +315,7 @@ fn main() {
         spin.set_message("Deleting duplicate images...");
         spin.enable_steady_tick(Duration::from_millis(50));
 
-        match delete_files(&dups) {
+        match delete_files(dups) {
             Ok(_) => spin.finish_with_message("Deleted duplicate images"),
             Err(why) => spin.finish_with_message(format!("Failed to delete duplicate images: {}", why))
         }
