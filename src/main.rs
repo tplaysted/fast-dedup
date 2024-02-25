@@ -145,31 +145,36 @@ fn generate_hashes(images: Vec<String>, bar: ProgressBar) -> io::Result<Vec<(Str
         bar.inc(1);
     }
 
-    bar.finish();
+    bar.finish_with_message("Done!");
 
     return Ok(hashes);
 }
 
-fn generate_hashes_multithreaded(paths: Vec<String>, bar: ProgressBar, thread_count: i32) -> io::Result<Vec<(String, Dhash)>> {
+fn generate_hashes_multithreaded(paths: Vec<String>, sty: ProgressStyle, thread_count: i32) -> io::Result<Vec<(String, Dhash)>> {
     let mut hashes: Vec<(String, Dhash)> = vec![];
 
     let splits = get_splits(paths, thread_count.try_into().unwrap());
-    let mut threads = vec![];
 
     let (tx, rx) = mpsc::channel();
 
     let m = MultiProgress::new();
+    let mut i = 1;
 
     for split in splits {
-        let new_bar = m.add(bar.clone());
+        let new_bar = m.add(ProgressBar::new(split.len().try_into().unwrap()));
+        new_bar.set_style(sty.clone());
+        new_bar.set_message(format!("Generating hashes, thread #{}", i));
         let tx1 = tx.clone();
-        threads.push(thread::spawn(move || {
+        thread::spawn(move || {
             let sub_hashes = generate_hashes(split, new_bar).unwrap();
             for hash in sub_hashes {
                 tx1.send(hash).unwrap();
             }
-        }));
+        });
+        i += 1;
     }
+
+    drop(tx);
 
     for received in rx {
         hashes.push(received);
@@ -270,8 +275,6 @@ fn main() {
     )
     .unwrap()
     .progress_chars("=>-");
-    let bar = ProgressBar::new(images.len() as u64);
-    bar.set_style(sty);
 
     // Generate hashes
     println!("Hashing images...");
@@ -280,7 +283,7 @@ fn main() {
     for im in &images {
         paths.push(String::from(im.path().to_str().unwrap()));
     }
-    let hashes = generate_hashes_multithreaded(paths, bar, 4).unwrap();
+    let hashes = generate_hashes_multithreaded(paths, sty, 4).unwrap();
     let mut keys = vec![];
 
     for hash in hashes {
