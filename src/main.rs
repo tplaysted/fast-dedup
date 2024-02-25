@@ -17,18 +17,10 @@ use imagesize;
 // multithreading imports
 use std::sync::mpsc;
 use std::thread;
+use std::thread::available_parallelism;
 
 // misc imports
 use std::time::Duration;
-
-// Simple command argument struct
-// #[derive(Parser, Debug)]
-// #[command(version, about, long_about = None)]
-// struct Args {
-//     // Copy files to target directory?
-//     #[arg(short, long, action, default_value="target")]
-//     keep: String,
-// }
 
 // Implement partial ordering for image paths
 trait IsBetterQual {
@@ -150,7 +142,7 @@ fn generate_hashes(images: Vec<String>, bar: ProgressBar) -> io::Result<Vec<(Str
     return Ok(hashes);
 }
 
-fn generate_hashes_multithreaded(paths: Vec<String>, sty: ProgressStyle, thread_count: i32) -> io::Result<Vec<(String, Dhash)>> {
+fn generate_hashes_multithreaded(paths: Vec<String>, sty: ProgressStyle, thread_count: usize) -> io::Result<Vec<(String, Dhash)>> {
     let mut hashes: Vec<(String, Dhash)> = vec![];
 
     let splits = get_splits(paths, thread_count.try_into().unwrap());
@@ -278,12 +270,21 @@ fn main() {
 
     // Generate hashes
     println!("Hashing images...");
+
+    let thread_count: usize;
+
+    if let Some(&t) = m.get_one::<usize>("Threads") {
+        let max_threads = available_parallelism().unwrap();
+        thread_count = std::cmp::min(t, max_threads.into());
+    } else {
+        thread_count = 4;
+    }
     
     let mut paths = vec![];
     for im in &images {
         paths.push(String::from(im.path().to_str().unwrap()));
     }
-    let hashes = generate_hashes_multithreaded(paths, sty, 4).unwrap();
+    let hashes = generate_hashes_multithreaded(paths, sty, thread_count).unwrap();
     let mut keys = vec![];
 
     for hash in hashes {
@@ -334,6 +335,15 @@ fn cli() -> Command {
             .default_missing_value("target")
             .num_args(0..=1)
             .help("Keep files and copy originals into new directory (default '/target')")
+        )
+        .arg(
+            Arg::new("Threads")
+            .short('t')
+            .long("threads")
+            .default_missing_value("4")
+            .num_args(0..=1)
+            .help("Number of threads to use (default 4)")
+            .value_parser(clap::value_parser!(usize))
         )
         .about(
             "A fast utility for removing duplicate image files with perceptual hashing."
